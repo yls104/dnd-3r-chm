@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 $Marker = 'dnd3r-feedback-entry'
 $ButtonLabel = '&#x53cd;&#x9988;&#x672c;&#x9875;&#x52d8;&#x8bef;'
 $TextEncoding936 = [Text.Encoding]::GetEncoding(936)
+$FeedbackExcludedPageRefs = @('译者名录1.1.htm')
 
 function Get-TextEncoding([byte[]]$Bytes) {
     if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 239 -and $Bytes[1] -eq 187 -and $Bytes[2] -eq 191) {
@@ -99,6 +100,17 @@ function Get-PageRef([string]$FullPath, [string]$Root) {
     }
     $relative = $fullPath.Substring($rootFull.Length)
     return Normalize-PageRef $relative
+}
+
+function Test-FeedbackExcluded([string]$PageRef) {
+    return $PageRef -in $FeedbackExcludedPageRefs
+}
+
+function Assert-NoFeedbackEntry($File, [string]$PageRef) {
+    $read = Read-TextFile $File.FullName
+    if ($read.Text.Contains($Marker)) {
+        throw "Feedback-excluded page contains a feedback entry: $PageRef"
+    }
 }
 
 function Get-SourceContext([string]$PageRef, $Index) {
@@ -215,22 +227,35 @@ if ($pages.Count -eq 0) { throw "No HTML pages found under $RepoRoot" }
 
 if ($Mode -eq 'inject') {
     $counts = @{ injected = 0; updated = 0; already = 0 }
+    $excluded = 0
     foreach ($file in $pages) {
         $pageRef = Get-PageRef $file.FullName $RepoRoot
+        if (Test-FeedbackExcluded $pageRef) {
+            Assert-NoFeedbackEntry $file $pageRef
+            $excluded++
+            continue
+        }
         $result = Inject-FeedbackEntry $file $pageRef $index
         $counts[$result]++
     }
     [pscustomobject]@{
         Mode = $Mode
         Pages = $pages.Count
+        Excluded = $excluded
         ContentsIndexEntries = $index.Count
         Injected = $counts.injected
         Updated = $counts.updated
         AlreadyInjected = $counts.already
     } | Format-List
 } else {
+    $excluded = 0
     $results = foreach ($file in $pages) {
         $pageRef = Get-PageRef $file.FullName $RepoRoot
+        if (Test-FeedbackExcluded $pageRef) {
+            Assert-NoFeedbackEntry $file $pageRef
+            $excluded++
+            continue
+        }
         Validate-FeedbackEntry $file $pageRef $index
     }
     $invalid = @($results | Where-Object { -not $_.IsValid })
@@ -238,7 +263,8 @@ if ($Mode -eq 'inject') {
     $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $reportPath -Encoding UTF8
     [pscustomobject]@{
         Mode = $Mode
-        Pages = $results.Count
+        Pages = $pages.Count
+        Excluded = $excluded
         Valid = $results.Count - $invalid.Count
         Invalid = $invalid.Count
         ContentsIndexEntries = $index.Count
